@@ -1,0 +1,2 @@
+run:
+	nodemon -e go -x 'go run . || exit 1' --signal SIGTERM
