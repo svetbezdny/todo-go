@@ -5,8 +5,8 @@ import (
 )
 
 type Todo struct {
-	ID   int    `json:"id"`
-	Item string `json:"item"`
+	ID   int    `gorm:"primaryKey;autoIncrement" json:"id,omitempty"`
+	Item string `json:"item" validate:"required,min=1"`
 }
 type TodoItem struct {
 	Item string `json:"item"`
