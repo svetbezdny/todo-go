@@ -7,16 +7,15 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
-)
-
-var (
-	TodoList = []Todo{}
-	mu       sync.Mutex
-	nexId    = 1
+	"time"
 )
 
 func main() {
+
+	err := InitDatabase()
+	if err != nil {
+		log.Fatal("Failed to connect to database")
+	}
 
 	mux := http.NewServeMux()
 
@@ -25,19 +24,24 @@ func main() {
 
 	handler := LogMiddleware(mux)
 
-	err := http.ListenAndServe(":3000", handler)
+	err = http.ListenAndServe(":3000", handler)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 }
 
 func TodoHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Allow", "GET, POST, DELETE")
 	w.Header().Set("Content-Type", "application/json")
-	switch r.Method {
 
+	switch r.Method {
 	case http.MethodGet:
-		json.NewEncoder(w).Encode(TodoList)
+		todos, err := GetAllTodo(DB)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		json.NewEncoder(w).Encode(todos)
 
 	case http.MethodPost:
 		var newTodo TodoItem
@@ -46,23 +50,24 @@ func TodoHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if newTodo.Item == "" {
-			http.Error(w, "Item cannot be empty", http.StatusBadRequest)
+		todo, err := InsertTodo(DB, Todo{Item: newTodo.Item})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		todo := Todo{ID: nexId, Item: newTodo.Item}
-		nexId++
-		mu.Lock()
-		TodoList = append(TodoList, todo)
-		mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(todo)
+
 	case http.MethodDelete:
-		TodoList = []Todo{}
+		err := DeleteAllTodo(DB)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]string{"message": "Todo cleared successfully"})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
 	}
 }
 
@@ -71,27 +76,23 @@ func TodoByIdHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	todoId := strings.TrimPrefix(r.URL.Path, "/todo/")
+
 	id, err := strconv.Atoi(todoId)
 	if err != nil {
-		http.Error(w, "Invalid todo id", http.StatusBadRequest)
-		return
-	}
-
-	var todo *Todo
-	for index := range TodoList {
-		if TodoList[index].ID == id {
-			todo = &TodoList[index]
-			break
-		}
-	}
-
-	if todo == nil {
-		http.Error(w, fmt.Sprintf("Todo with id %d not found", id), http.StatusNotFound)
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid todo id"})
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
+		todo, err := GetTodoById(DB, id)
+		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+
 		json.NewEncoder(w).Encode(todo)
 	case http.MethodPut:
 		var updatedTodo TodoItem
@@ -100,32 +101,38 @@ func TodoByIdHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if updatedTodo.Item == "" {
-			http.Error(w, "Item cannot be empty", http.StatusBadRequest)
+		todo, err := UpdateTodoById(DB, id, updatedTodo.Item)
+		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
 
-		todo.Item = updatedTodo.Item
 		json.NewEncoder(w).Encode(todo)
 	case http.MethodDelete:
-		for idx := range TodoList {
-			if TodoList[idx].ID == id {
-				mu.Lock()
-				TodoList = append(TodoList[:idx], TodoList[idx+1:]...)
-				mu.Unlock()
-				json.NewEncoder(w).Encode(map[string]string{"message": "Todo deleted successfully"})
-				return
-			}
+		ok, err := DeleteTodoById(DB, id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("Todo with id %d not found", id)})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"message": "Todo deleted successfully"})
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
 	}
 }
 
 func LogMiddleware(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		mw := &LogResponseWriter{ResponseWriter: w, StatusCode: http.StatusOK}
 		handler.ServeHTTP(mw, r)
-		log.Printf("%s [%d]", r.URL.RequestURI(), mw.StatusCode)
+		log.Printf(`{"host":"%s","method":"%s","path":"%s","status":%d,"duration":"%s"}`,
+			r.RemoteAddr, r.Method, r.URL.Path, mw.StatusCode, time.Since(start).String())
 	})
 }
