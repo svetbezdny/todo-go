@@ -12,8 +12,7 @@ import (
 
 func main() {
 
-	err := InitDatabase()
-	if err != nil {
+	if err := InitDatabase(); err != nil {
 		log.Fatal("Failed to connect to database")
 	}
 
@@ -24,8 +23,7 @@ func main() {
 
 	handler := LogMiddleware(mux)
 
-	err = http.ListenAndServe(":3000", handler)
-	if err != nil {
+	if err := http.ListenAndServe(":3000", handler); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -59,8 +57,7 @@ func TodoHandler(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(todo)
 
 	case http.MethodDelete:
-		err := DeleteAllTodo(DB)
-		if err != nil {
+		if err := DeleteAllTodo(DB); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -132,7 +129,13 @@ func LogMiddleware(handler http.Handler) http.Handler {
 		start := time.Now()
 		mw := &LogResponseWriter{ResponseWriter: w, StatusCode: http.StatusOK}
 		handler.ServeHTTP(mw, r)
-		log.Printf(`{"host":"%s","method":"%s","path":"%s","status":%d,"duration":"%s"}`,
+		log.Printf(`{
+			"host":"%s",
+			"method":"%s",
+			"path":"%s",
+			"status":%d,
+			"duration":"%s"
+			}`,
 			r.RemoteAddr, r.Method, r.URL.Path, mw.StatusCode, time.Since(start).String())
 	})
 }
