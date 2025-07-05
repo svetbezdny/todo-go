@@ -17,13 +17,12 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-
 	mux.HandleFunc("/todo", TodoHandler)
 	mux.HandleFunc("/todo/", TodoByIdHandler)
-
 	handler := LogMiddleware(mux)
 
-	if err := http.ListenAndServe(":3000", handler); err != nil {
+	log.Println("Starting server at port 8080")
+	if err := http.ListenAndServe(":8080", handler); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -114,7 +113,8 @@ func TodoByIdHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("Todo with id %d not found", id)})
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": fmt.Sprintf("Todo with id %d not found", id)})
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]string{"message": "Todo deleted successfully"})
