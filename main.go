@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,10 +11,18 @@ import (
 	"time"
 )
 
+var repo *DBRepository
+
 func main() {
 
-	if err := InitDatabase(); err != nil {
-		log.Fatal("Failed to connect to database")
+	var err error
+	repo, err = NewDBRepository()
+	if err != nil {
+		log.Fatalf("failed to connect to database: %v", err)
+	}
+
+	if err := repo.InitDatabase(); err != nil {
+		log.Fatalf("failed to init database: %v", err)
 	}
 
 	mux := http.NewServeMux()
@@ -21,10 +30,8 @@ func main() {
 	mux.HandleFunc("/todo/", TodoByIdHandler)
 	handler := LogMiddleware(mux)
 
-	log.Println("Starting server at port 8080")
-	if err := http.ListenAndServe(":8080", handler); err != nil {
-		log.Fatal(err)
-	}
+	log.Println("starting server at port 8080")
+	log.Fatal(http.ListenAndServe(":8080", handler))
 }
 
 func TodoHandler(w http.ResponseWriter, r *http.Request) {
@@ -33,9 +40,9 @@ func TodoHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		todos, err := GetAllTodo(DB)
+		todos, err := repo.GetAll()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		json.NewEncoder(w).Encode(todos)
@@ -47,23 +54,28 @@ func TodoHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		todo, err := InsertTodo(DB, Todo{Item: newTodo.Item})
+		if newTodo.Item == "" {
+			http.Error(w, "Item cannot be empty", http.StatusBadRequest)
+			return
+		}
+
+		todo, err := repo.Insert(Todo{Item: newTodo.Item})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(todo)
+		json.NewEncoder(w).Encode(TodoCreateResponse{Item: todo.Item, CreatedAt: todo.CreatedAt})
 
 	case http.MethodDelete:
-		if err := DeleteAllTodo(DB); err != nil {
+		if err := repo.DeleteAll(); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]string{"message": "Todo cleared successfully"})
+		json.NewEncoder(w).Encode(map[string]string{"message": "todo cleared successfully"})
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
 	}
 }
 
@@ -76,20 +88,24 @@ func TodoByIdHandler(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(todoId)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid todo id"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid todo id"})
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		todo, err := GetTodoById(DB, id)
+		todo, err := repo.GetById(id)
 		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
+			if errors.Is(err, ErrNotFound) {
+				w.WriteHeader(http.StatusNotFound)
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
 
-		json.NewEncoder(w).Encode(todo)
+		json.NewEncoder(w).Encode(TodoResponse{Item: todo.Item, CreatedAt: todo.CreatedAt, UpdatedAt: todo.UpdatedAt})
 	case http.MethodPut:
 		var updatedTodo TodoItem
 		if err := json.NewDecoder(r.Body).Decode(&updatedTodo); err != nil {
@@ -97,30 +113,33 @@ func TodoByIdHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		todo, err := UpdateTodoById(DB, id, updatedTodo.Item)
+		todo, err := repo.UpdateById(id, updatedTodo.Item)
 		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
+			if errors.Is(err, ErrNotFound) {
+				w.WriteHeader(http.StatusNotFound)
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
 
-		json.NewEncoder(w).Encode(todo)
+		json.NewEncoder(w).Encode(TodoUpdateResponse{Item: todo.Item, UpdatedAt: todo.UpdatedAt})
 	case http.MethodDelete:
-		ok, err := DeleteTodoById(DB, id)
+		err := repo.DeleteById(id)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			if errors.Is(err, ErrNotFound) {
+				w.WriteHeader(http.StatusNotFound)
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
-		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]string{
-				"error": fmt.Sprintf("Todo with id %d not found", id)})
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]string{"message": "Todo deleted successfully"})
+		json.NewEncoder(w).Encode(map[string]string{"message": fmt.Sprintf("todo %d deleted successfully", id)})
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
 	}
 }
 

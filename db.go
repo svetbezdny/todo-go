@@ -3,71 +3,94 @@ package main
 import (
 	"errors"
 	"fmt"
+
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
-var (
-	DB          *gorm.DB
-	ErrNotFound = errors.New("not found")
-)
+var ErrNotFound = errors.New("not found")
 
-func (Todo) TableName() string {
-	return "todos"
+type DBRepository struct {
+	db *gorm.DB
 }
 
-func InitDatabase() error {
-	var err error
-	DB, err = gorm.Open(sqlite.Open("database.db"), &gorm.Config{})
+type Repository interface {
+	Insert(todo Todo) (Todo, error)
+	GetById(id int) (Todo, error)
+	UpdateById(id int, item string) (Todo, error)
+	DeleteById(id int) error
+	GetAll() ([]Todo, error)
+	DeleteAll() error
+}
+
+func NewDBRepository() (*DBRepository, error) {
+	db, err := gorm.Open(sqlite.Open("database.db"), &gorm.Config{})
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
-	DB.AutoMigrate(&Todo{})
+	return &DBRepository{db: db}, nil
+}
+
+func (db *DBRepository) InitDatabase() error {
+	if err := db.db.AutoMigrate(&Todo{}); err != nil {
+		return fmt.Errorf("failed to migrate database: %w", err)
+	}
 	return nil
 }
 
-func InsertTodo(db *gorm.DB, todo Todo) (Todo, error) {
-	err := db.Create(&todo).Error
-	return todo, err
+func (db *DBRepository) Insert(todo Todo) (Todo, error) {
+	if err := db.db.Create(&todo).Error; err != nil {
+		return Todo{}, fmt.Errorf("failed to insert todo: %w", err)
+	}
+	return todo, nil
 }
 
-func GetTodoById(db *gorm.DB, id int) (Todo, error) {
+func (db *DBRepository) GetById(id int) (Todo, error) {
 	var todo Todo
-	err := db.Where("id = ?", id).Take(&todo).Error
+	err := db.db.Where("id = ?", id).Take(&todo).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return Todo{}, fmt.Errorf("Todo with id %d not found", id)
+			return Todo{}, fmt.Errorf("todo with id %d not found", id)
 		}
+		return Todo{}, fmt.Errorf("failed to get todo by id: %w", err)
 	}
-	return todo, err
+	return todo, nil
 }
 
-func UpdateTodoById(db *gorm.DB, id int, item string) (Todo, error) {
+func (db *DBRepository) UpdateById(id int, item string) (Todo, error) {
 	var todo Todo
-	err := db.Model(&Todo{}).Where("id = ?", id).Update("item", item).First(&todo).Error
+	err := db.db.Model(&Todo{}).Where("id = ?", id).Update("item", item).First(&todo).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return Todo{}, fmt.Errorf("Todo with id %d not found", id)
+			return Todo{}, ErrNotFound
 		}
+		return Todo{}, fmt.Errorf("failed to update todo by id: %w", err)
 	}
-	return todo, err
+	return todo, nil
 }
 
-func DeleteTodoById(db *gorm.DB, id int) (bool, error) {
-	result := db.Where("id = ?", id).Delete(&Todo{})
+func (db *DBRepository) DeleteById(id int) error {
+	result := db.db.Where("id = ?", id).Delete(&Todo{})
 	if result.Error != nil {
-		return false, result.Error
+		return fmt.Errorf("failed to delete todo by id: %w", result.Error)
 	}
-	return result.RowsAffected > 0, nil
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
-func GetAllTodo(db *gorm.DB) ([]Todo, error) {
-	todos := make([]Todo, 0)
-	err := db.Find(&todos).Error
-	return todos, err
+func (db *DBRepository) GetAll() ([]Todo, error) {
+	var todos []Todo
+	if err := db.db.Find(&todos).Error; err != nil {
+		return nil, fmt.Errorf("failed to get all todos: %w", err)
+	}
+	return todos, nil
 }
 
-func DeleteAllTodo(db *gorm.DB) error {
-	result := db.Where("1 = 1").Delete(&Todo{})
-	return result.Error
+func (db *DBRepository) DeleteAll() error {
+	if err := db.db.Where("1 = 1").Delete(&Todo{}).Error; err != nil {
+		return fmt.Errorf("failed to delete all todos: %w", err)
+	}
+	return nil
 }
